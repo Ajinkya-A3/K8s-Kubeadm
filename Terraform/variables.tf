@@ -35,3 +35,8 @@ variable "key_name" {
   type    = string
   default = "ec2"
 }
+
+variable "kubernetes_version" {
+  type    = string
+  default = "1.35"
+}

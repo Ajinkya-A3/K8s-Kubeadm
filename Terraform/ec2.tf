@@ -10,6 +10,11 @@ resource "aws_instance" "control_plane" {
   vpc_security_group_ids      = [aws_security_group.control_plane.id]
   associate_public_ip_address = true
 
+  user_data = templatefile("${path.module}/userdata/common.sh.tpl", {
+    kubernetes_version = var.kubernetes_version
+    node_name          = "${var.cluster_name}-control-plane"
+  })
+
   root_block_device {
     volume_size           = 20
     volume_type           = "gp3"
@@ -31,6 +36,11 @@ resource "aws_instance" "worker" {
   key_name                    = var.key_name
   vpc_security_group_ids      = [aws_security_group.data_plane.id]
   associate_public_ip_address = true
+
+  user_data = templatefile("${path.module}/userdata/common.sh.tpl", {
+    kubernetes_version = var.kubernetes_version
+    node_name          = "${var.cluster_name}-worker-${count.index + 1}"
+  })
 
   root_block_device {
     volume_size           = 20
