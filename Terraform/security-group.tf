@@ -14,7 +14,7 @@ resource "aws_security_group" "control_plane" {
   })
 
   lifecycle {
-    ignore_changes = [ ingress,egress ]
+    ignore_changes = [ingress, egress]
   }
 }
 
@@ -31,7 +31,7 @@ resource "aws_security_group" "data_plane" {
   })
 
   lifecycle {
-    ignore_changes = [ ingress,egress ]
+    ignore_changes = [ingress, egress]
   }
 }
 

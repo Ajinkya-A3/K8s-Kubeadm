@@ -4,7 +4,7 @@ variable "region" {
 }
 
 variable "instance_type" {
-  type = string
+  type    = string
   default = "t3.medium"
 }
 
@@ -20,18 +20,18 @@ variable "cluster_name" {
 }
 
 variable "tags" {
-  type    = map(string)
+  type = map(string)
   default = {
-    ManagedBy   = "terraform"
+    ManagedBy = "terraform"
   }
 }
 
 variable "worker_count" {
-  type = number
-  default = 2 
+  type    = number
+  default = 2
 }
 
 variable "key_name" {
-  type = string
+  type    = string
   default = "ec2"
 }
