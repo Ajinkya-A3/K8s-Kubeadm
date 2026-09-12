@@ -12,6 +12,10 @@ resource "aws_security_group" "control_plane" {
   tags = merge(var.tags, {
     Name = "${var.cluster_name}-control-plane-sg"
   })
+
+  lifecycle {
+    ignore_changes = [ ingress,egress ]
+  }
 }
 
 # =========================================
@@ -25,6 +29,10 @@ resource "aws_security_group" "data_plane" {
   tags = merge(var.tags, {
     Name = "${var.cluster_name}-data-plane-sg"
   })
+
+  lifecycle {
+    ignore_changes = [ ingress,egress ]
+  }
 }
 
 # =========================================
@@ -59,7 +67,7 @@ resource "aws_security_group_rule" "cp_ssh_from_admin" {
   from_port         = 22
   to_port           = 22
   protocol          = "tcp"
-  cidr_blocks       = [var.vpc_cidr]
+  cidr_blocks       = ["0.0.0.0/0"]
   security_group_id = aws_security_group.control_plane.id
   description       = "SSH from admin IP"
 }
@@ -113,7 +121,7 @@ resource "aws_security_group_rule" "dp_ssh_from_admin" {
   from_port         = 22
   to_port           = 22
   protocol          = "tcp"
-  cidr_blocks       = [var.vpc_cidr]
+  cidr_blocks       = ["0.0.0.0/0"]
   security_group_id = aws_security_group.data_plane.id
   description       = "SSH from admin IP"
 }
