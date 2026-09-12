@@ -74,9 +74,18 @@ apt-get install -y kubelet kubeadm kubectl
 apt-mark hold kubelet kubeadm kubectl
 sudo systemctl enable kubelet
 
+# ---------------------------------------------------------------------------
 # Give kubelet the node's private IP explicitly - avoids it picking the
 # wrong interface on multi-NIC instances
-LOCAL_IP=$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)
+# IMDSv2 token - required if IMDSv2 is enforced on this instance (default
+# on newer accounts/launch templates). Every IMDS curl below uses this.
+# ---------------------------------------------------------------------------
+IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+
+LOCAL_IP=$(curl -s -H "X-aws-ec2-metadata-token: $${IMDS_TOKEN}" \
+  http://169.254.169.254/latest/meta-data/local-ipv4)
+
 cat <<EOF | tee /etc/default/kubelet
 KUBELET_EXTRA_ARGS=--node-ip=$${LOCAL_IP}
 EOF
