@@ -59,7 +59,13 @@ systemctl restart containerd
 systemctl enable containerd
 
 # ---------------------------------------------------------------------------
-# 4. kubeadm / kubelet / kubectl from the official pkgs.k8s.io repo
+# 4. kubeadm / kubelet / kubectl / cri-tools from the official pkgs.k8s.io repo
+#
+# cri-tools (crictl) is NOT a declared dependency of kubeadm on this repo -
+# `apt-cache depends kubeadm` confirms it pulls in nothing. It has to be
+# installed explicitly or you end up with no crictl on any node at all.
+# Pinned and held alongside the other three so it can't drift independently
+# and end up mismatched with the installed containerd version.
 # ---------------------------------------------------------------------------
 K8S_VERSION="${kubernetes_version}"
 
@@ -70,9 +76,37 @@ echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.
   tee /etc/apt/sources.list.d/kubernetes.list
 
 apt-get update
-apt-get install -y kubelet kubeadm kubectl
-apt-mark hold kubelet kubeadm kubectl
-sudo systemctl enable kubelet
+apt-get install -y kubelet kubeadm kubectl cri-tools
+apt-mark hold kubelet kubeadm kubectl cri-tools
+systemctl enable kubelet
+
+# crictl config - without this it doesn't know which socket to use and
+# falls back to probing deprecated default endpoints
+cat <<EOF | tee /etc/crictl.yaml
+runtime-endpoint: unix:///run/containerd/containerd.sock
+image-endpoint: unix:///run/containerd/containerd.sock
+timeout: 10
+EOF
+
+# ---------------------------------------------------------------------------
+# 5. Shell UX - bash completion + `k` alias for kubectl, for the ubuntu user
+#
+# userdata runs as root, so ~/.bashrc would resolve to /root/.bashrc and
+# silently configure a shell you never actually use - path is made explicit
+# here and ownership is fixed afterward so the ubuntu user (who you SSH in
+# as) gets it on next login.
+# ---------------------------------------------------------------------------
+apt-get install -y bash-completion
+
+UBUNTU_BASHRC=/home/ubuntu/.bashrc
+{
+  echo 'source /usr/share/bash-completion/bash_completion'
+  echo 'source <(kubectl completion bash)'
+  echo 'alias k=kubectl'
+  echo 'complete -F __start_kubectl k'
+} >> "$UBUNTU_BASHRC"
+
+chown ubuntu:ubuntu "$UBUNTU_BASHRC"
 
 # ---------------------------------------------------------------------------
 # Give kubelet the node's private IP explicitly - avoids it picking the
