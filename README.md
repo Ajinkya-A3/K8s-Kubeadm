@@ -13,6 +13,7 @@ understood step by step here, not hidden behind a managed control plane.
 ```
 ├── LICENSE
 ├── README.md
+├── Version-Upgrade.md   # manual kubeadm minor-version upgrade walkthrough
 └── Terraform
     ├── vpc.tf              # VPC, subnets, IGW, route tables
     ├── security-group.tf   # control-plane-sg and data-plane-sg
@@ -136,31 +137,112 @@ apt-get install -y containerd.io
 containerd config default | tee /etc/containerd/config.toml
 sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
 ```
-Installs containerd from Docker's apt repo (runc comes along as a
-dependency automatically — no separate install needed). `containerd
-config default` generates a config file, since containerd ships without
-one. The `SystemdCgroup` flip is the single most common first-time
-kubeadm failure: Ubuntu/systemd and kubeadm both default to the
-**systemd** cgroup driver, but containerd's own compiled default is
+Installs containerd from Docker's apt repo. **Correction from an earlier
+version of this doc:** runc is *not* pulled in as a separate apt
+dependency — `apt-cache depends containerd.io` only lists `libc6` and
+`libseccomp2`. Instead, `containerd.io` bundles its own runc binary and
+declares `Conflicts`/`Replaces` against the standalone `runc` package, so
+apt removes any separate `runc` install and uses the bundled one. Net
+effect is the same (you get a working runc for free), but the mechanism
+is bundling, not a dependency — worth knowing if you're ever debugging
+which runc binary is actually in use (`dpkg -S $(which runc)` will
+attribute it to `containerd.io`, not a `runc` package).
+
+`containerd config default` generates a config file, since containerd
+ships without one. The `SystemdCgroup` flip is the single most common
+first-time kubeadm failure: Ubuntu/systemd and kubeadm both default to
+the **systemd** cgroup driver, but containerd's own compiled default is
 **cgroupfs** — if kubelet and containerd disagree, kubelet crash-loops
 right after `init`/`join` with cgroup errors in `journalctl -u kubelet`.
 
 ```bash
-# 4. kubeadm / kubelet / kubectl
+# 4. kubeadm / kubelet / kubectl / cri-tools
 curl -fsSL "https://pkgs.k8s.io/core:/stable:/v$${K8S_VERSION}/deb/Release.key" | ...
-apt-get install -y kubelet kubeadm kubectl
-apt-mark hold kubelet kubeadm kubectl
-sudo systemctl enable kubelet
+apt-get install -y kubelet kubeadm kubectl cri-tools
+apt-mark hold kubelet kubeadm kubectl cri-tools
+systemctl enable kubelet
 ```
 Installs from the official, per-minor-version `pkgs.k8s.io` repo (the old
-`apt.kubernetes.io` repo is dead). `apt-mark hold` pins the three
-packages so a routine `apt-get upgrade` can't silently bump the
-Kubernetes minor version — unplanned version skew between kubeadm/kubelet
-and the control plane is a real way to break a cluster. `systemctl enable
-kubelet` makes it start automatically on every boot, even before
-`kubeadm init`/`join` has run — kubelet is designed to sit and retry
-until it finds a valid config, rather than needing to be started
-manually after joining.
+`apt.kubernetes.io` repo is dead). `apt-mark hold` pins the packages so a
+routine `apt-get upgrade` can't silently bump the Kubernetes minor
+version — unplanned version skew between kubeadm/kubelet and the control
+plane is a real way to break a cluster. `systemctl enable kubelet` makes
+it start automatically on every boot, even before `kubeadm init`/`join`
+has run — kubelet is designed to sit and retry until it finds a valid
+config, rather than needing to be started manually after joining.
+
+**`cri-tools` is included explicitly and is not optional.** Unlike older
+Kubernetes packaging, kubeadm on `pkgs.k8s.io` does **not** declare
+`cri-tools` as a dependency — `apt-cache depends kubeadm` confirms it
+pulls in nothing else. Without this explicit install, `crictl` simply
+doesn't exist on the node, silently, with no error at any point in the
+bootstrap. It's held alongside the other three packages for the same
+reason they're held: an unpinned `cri-tools` bump has broken clusters
+before by pulling in a version incompatible with the installed containerd
+(a documented failure mode upstream), and it should always move in
+lockstep with a planned upgrade, not on its own.
+
+Right after install, a minimal `/etc/crictl.yaml` is written pointing at
+the containerd socket — without it, crictl doesn't know which runtime
+endpoint to use and falls back to probing deprecated defaults, which
+looks like a broken install even once the binary is present:
+
+```bash
+cat <<EOF | tee /etc/crictl.yaml
+runtime-endpoint: unix:///run/containerd/containerd.sock
+image-endpoint: unix:///run/containerd/containerd.sock
+timeout: 10
+EOF
+```
+
+```bash
+# 5. Shell UX
+apt-get install -y bash-completion
+UBUNTU_BASHRC=/home/ubuntu/.bashrc
+{
+  echo 'source /usr/share/bash-completion/bash_completion'
+  echo 'source <(kubectl completion bash)'
+  echo 'alias k=kubectl'
+  echo 'complete -F __start_kubectl k'
+} >> "$UBUNTU_BASHRC"
+chown ubuntu:ubuntu "$UBUNTU_BASHRC"
+```
+Sets up `kubectl` tab completion and a `k` alias for the `ubuntu` user —
+purely quality-of-life, not required for the cluster to function. The
+path is written explicitly as `/home/ubuntu/.bashrc` rather than
+`~/.bashrc` because userdata runs as **root**; `~` there resolves to
+`/root`, which isn't the shell you actually SSH into. Writing to root's
+bashrc instead would silently configure a shell nobody uses, so the path
+is hardcoded and ownership is corrected afterward with `chown` so the
+file is still writable/editable by `ubuntu` going forward.
+
+**Gotcha: this doesn't take effect in your current SSH session.**
+`.bashrc` is only read when a new interactive shell starts — appending to
+it during userdata just stages the lines for later, it doesn't run them.
+If you're SSH'd in from before the instance finished booting (or your
+SSH client is reusing a multiplexed connection instead of opening a truly
+new one), `k` will show up as `-bash: k: not found` even though the
+alias is correctly sitting in the file. Fix is either:
+```bash
+source ~/.bashrc     # re-read it in the current shell, or
+```
+```bash
+exit                  # or just open a brand-new session
+ssh ubuntu@<node-ip>
+```
+Confirm with `type k` and `complete -p k` — both should resolve once the
+file has actually been sourced.
+
+Also worth knowing: Ubuntu 24.04's default `.bashrc` already has a
+conditional block that sources `bash-completion` on its own —
+```bash
+if [ -f /usr/share/bash-completion/bash_completion ]; then
+    . /usr/share/bash-completion/bash_completion
+```
+— so the explicit `source /usr/share/bash-completion/bash_completion`
+line this script appends is redundant (sourced twice, harmless). Not the
+cause of the issue above, but a candidate to trim if you clean this
+script up later.
 
 ```bash
 # Node IP pin
@@ -186,7 +268,7 @@ multi-interface instances) auto-detection.
 
 ## Kubernetes cluster bring-up (manual, over SSH)
 
-Terraform gets every node to "kubeadm/kubelet/kubectl installed,
+Terraform gets every node to "kubeadm/kubelet/kubectl/cri-tools installed,
 containerd configured, ready to be initialized." Everything past that is
 run by hand.
 
@@ -288,10 +370,14 @@ Kubernetes `NetworkPolicy` objects.
 
 ## Testing
 
-A basic nginx Deployment (5 replicas) + NodePort Service validates the
-full path: scheduler → CNI pod IP assignment → kube-proxy Service routing
-→ container. `kubectl get pods -o wide` to check pod placement/IPs,
-`curl http://<worker-public-ip>:30080` to confirm external reachability.
+An nginx Deployment + NodePort Service validates the full path: scheduler
+→ CNI pod IP assignment → kube-proxy Service routing → container.
+`kubectl get pods -o wide` to check pod placement/IPs, `curl
+http://<worker-public-ip>:30080` to confirm external reachability. Also
+used as the workload for zero-downtime testing during manual version
+upgrades (topology spread constraints + readiness probe + a
+PodDisruptionBudget so draining a node doesn't take the Service down —
+see [`Version-Upgrade.md`](./Version-Upgrade.md) for the full manifest).
 
 ## Lessons learned (kept here on purpose)
 
@@ -308,13 +394,24 @@ full path: scheduler → CNI pod IP assignment → kube-proxy Service routing
 - **CIDR consistency matters more than the specific range chosen** — what
   breaks things is `kubeadm init --pod-network-cidr` and the CNI's
   install manifest disagreeing with each other, not the specific value.
+- **`cri-tools` is not a kubeadm dependency on `pkgs.k8s.io`** — it has to
+  be installed explicitly or `crictl` is simply absent on every node,
+  with no error anywhere in the bootstrap to flag it. Confirmed via
+  `apt-cache depends kubeadm` returning nothing. Now installed and held
+  alongside kubeadm/kubelet/kubectl in the userdata script.
+- **containerd's runc is bundled, not a separate dependency** —
+  `containerd.io` ships its own runc and uses `Conflicts`/`Replaces`
+  against the standalone `runc` package rather than depending on it.
+  Functionally the same outcome, but worth knowing when tracing which
+  package actually owns the runc binary on a node.
 
 ## Next steps
 
 - Swap Calico for Cilium and compare (eBPF-native dataplane, Hubble
   observability).
-- Document a minor-version upgrade (etcd snapshot first, control plane
-  before workers, one worker at a time).
+- ~~Document a minor-version upgrade~~ — done, see
+  [`Version-Upgrade.md`](./Version-Upgrade.md) (etcd snapshot, control
+  plane before workers, one worker at a time, PDB-respecting drains).
 - Automate `kubeadm init`/`join` via SSM Parameter Store instead of
   manual SSH, once the manual process is fully understood.
 
